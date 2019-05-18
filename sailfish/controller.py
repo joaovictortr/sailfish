@@ -713,7 +713,7 @@ class LBSimulationController(object):
                 # Collect timing information from all subdomains.
                 for i in range(len(subdomains)):
                     ti, min_ti, max_ti, nodes = summary_receiver.recv_pyobj()
-                    summary_receiver.send('ack')
+                    summary_receiver.send_string('ack')
                     timing_infos.append(ti)
                     min_timings.append(min_ti)
                     max_timings.append(max_ti)

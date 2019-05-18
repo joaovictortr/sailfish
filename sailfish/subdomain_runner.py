@@ -1400,7 +1400,7 @@ class SubdomainRunner(object):
             self._summary_sender.send_pyobj((timing_info, min_timings,
                     max_timings, self._subdomain.active_nodes))
             self.config.logger.debug('Sending timing information to controller.')
-            assert self._summary_sender.recv() == 'ack'
+            assert self._summary_sender.recv_string() == 'ack'
 
     def _gpu_initial_conditions(self):
         self._sim.verify_fields()
