@@ -6,20 +6,21 @@ import numpy as np
 import csv
 import os.path
 from sailfish.subdomain import Subdomain3D
-from sailfish.node_type import NTFullBBWall, NTEquilibriumVelocity
+from sailfish.node_type import NTFullBBWall, NTRegularizedVelocity
 from sailfish.controller import LBSimulationController
 from sailfish.lb_single import LBFluidSim
-from sailfish.geo import EqualSubdomainsGeometry3D
+#from sailfish.geo import EqualSubdomainsGeometry3D
+from sailfish.geo import LBGeometry3D
 
 
 class LDCBlock(Subdomain3D):
     """3D Lid-driven geometry."""
 
-    max_v = 0.043
+    max_v = 0.05
 
     def boundary_conditions(self, hx, hy, hz):
         wall_bc = NTFullBBWall
-        velocity_bc = NTEquilibriumVelocity
+        velocity_bc = NTRegularizedVelocity
 
         wall_map = ((hz == 0) | (hx == self.gx - 1) | (hx == 0) | (hy == 0) |
                 (hy == self.gy - 1))
@@ -35,47 +36,23 @@ class LDCBlock(Subdomain3D):
 class LDCSim(LBFluidSim):
     subdomain = LDCBlock
 
-
-def save_result(filename_base, num_blocks, timing_infos, min_timings,
-        max_timings, subdomains):
-    f = open('%s_%d' % (filename_base, num_blocks), 'w')
-    f.write(str(timing_infos))
-    f.close()
-
-    f = open('%s_min_%d' % (filename_base, num_blocks), 'w')
-    f.write(str(min_timings))
-    f.close()
-
-    f = open('%s_max_%d' % (filename_base, num_blocks), 'w')
-    f.write(str(max_timings))
-    f.close()
-
-    mlups_total = 0
-    mlups_comp = 0
-
-    for ti in timing_infos:
-        block = subdomains[ti.subdomain_id]
-        mlups_total += block.num_nodes / ti.total * 1e-6
-        mlups_comp  += block.num_nodes / ti.comp * 1e-6
-
-    f = open('%s_mlups_%d' % (filename_base, num_blocks), 'w')
-    f.write('%.2f %.2f\n' % (mlups_total, mlups_comp))
-    f.close()
+    @classmethod
+    def update_defaults(cls, defaults):
+        defaults.update({'lat_nx': 64, 'lat_ny': 64, 'lat_nz': 64, 'grid': 'D3Q19'})
 
 
 def run_benchmark(lattice_size: tuple, block_size: int = 128,
                   timesteps: int = 1000, boundary_split: bool = False,
-                  check_results: bool = True, disable_cache: bool = True,
                   periodic: tuple = (False, False, True)):
     settings = {
         'verbose': True,
         'mode': 'benchmark',
         'access_pattern': 'AB',
-        'force_implementation': 'bgk',
+        'model': 'bgk',
+        'grid': 'D3Q19',
         'init_iters': 10,
         'max_iters': timesteps,
         'block_size': block_size,
-        'subdomains': 1,
         'lat_nx': lattice_size[0],
         'lat_ny': lattice_size[1],
         'lat_nz': lattice_size[2],
@@ -84,34 +61,53 @@ def run_benchmark(lattice_size: tuple, block_size: int = 128,
         'periodic_z': periodic[2],
         'use_intrinsics': True,
         'precision': 'double',
-        'node_addresing': 'direct',
-        'nocheck_invalid_results_host': check_results,
-        'nocheck_invalid_results_gpu': check_results,
-        'cuda-disable-l1': disable_cache,
-        'cuda-kernel-stats': True,
-        'nocuda_cache': True,
-        'cuda-nvcc-opts': '-O3',
+        'node_addressing': 'direct',
         'incompressible': True,
+	'every': 500,
     }
 
-    ctrl = LBSimulationController(LDCSim, EqualSubdomainsGeometry3D, settings)
-    timing_infos, min_timings, max_timings, _ = ctrl.run()
+    ctrl = LBSimulationController(LDCSim, LBGeometry3D, settings)
+    timing_infos, min_timings, max_timings, subdomains = ctrl.run()
 
-    print(str(timing_infos))
-    print(min_timings)
-    print(max_timings)
+    mlups_comp = float(0)
+    mlups_total = float(0)
+    for ti in timing_infos:
+        block = subdomains[ti.subdomain_id]
+        mlups_comp += (block.num_nodes / ti.comp) * 1e-6
+        mlups_total += (block.num_nodes / ti.total) * 1e-6
+
+    data = {
+        "cubicBlockSize": lattice_size[0],
+        "timesteps": timesteps,
+        "cudaBlockSize": block_size,
+        "fullyPeriodic": all(periodic) is True,
+        "mlupsPerProcess": mlups_comp,
+	"boundarySplit": boundary_split,
+    }
+
+    csv_exists = False
+    if os.path.isfile("singleNode.csv") is True:
+        csv_exists = True
+
+    with open("singleNode.csv", "a") as csvfile:
+        writer = csv.writer(csvfile)
+        if csv_exists is False:
+            # Write header
+            writer.writerow(list(sorted(data.keys())))
+
+        writer.writerow([data[key] for key in sorted(data.keys())])
+
+    print(f"MLUPS (compute): {mlups_comp}")
 
 
 if __name__ == '__main__':
     cudaBlockSizes = [32, 64, 128, 256]
-    cubicLatticeSizes = [3 * (lat_siz,) for lat_siz in reversed(range(16, 320+1, 32))]
+    cubicLatticeSizes = [3 * (lat_siz,) for lat_siz in reversed(range(16, 256+1, 16))]
     fullyPeriodic = [False, True]
     boundarySplit = [False, True]
-    checkResults = [False, True]
-    generator = itertools.product(cubicLatticeSizes, cudaBlockSizes, fullyPeriodic, boundarySplit, checkResults)
+    generator = itertools.product(cubicLatticeSizes, cudaBlockSizes, fullyPeriodic, boundarySplit)
     for params in generator:
-        cubicLatticeSize, cudaBlockSize, isFullyPeriodic, isBoundarySplit, hasToCheckResults = params
+        cubicLatticeSize, cudaBlockSize, isFullyPeriodic, isBoundarySplit = params
         run_benchmark(cubicLatticeSize, block_size=cudaBlockSize,
                       boundary_split=isBoundarySplit,
-                      check_results=hasToCheckResults,
                       periodic=(True, True, True) if isFullyPeriodic else (False, False, True))
